@@ -3,6 +3,8 @@ from torch_geometric.datasets import TUDataset
 from torch_geometric.loader import DataLoader
 import numpy as np
 from scipy.stats import rv_discrete
+import networkx as nx
+import matplotlib.pyplot as plt
 
 # %% Load the MUTAG dataset
 dataset = TUDataset(root='./data/', name='MUTAG')
@@ -30,9 +32,40 @@ graph_possible_links = graph_node_count * (graph_node_count - 1) / 2
 
 graph_density = graph_link_counts / graph_possible_links
 
-# What is needed to sample graphs:
+# %% What is needed to sample graphs:
 N_distribution = rv_discrete(values=(range(30), normalized_graph_node_count_histogram))
 link_probability = np.mean(graph_density)
 
+# %% Sample a graph
+def generate_erdos_graphs(n_graphs):
+    global link_probability
+    global N_distribution
+
+    graphs = []
+    N_samples = N_distribution.rvs(size=n_graphs)
+    for N in N_samples:
+        G = nx.erdos_renyi_graph(N, link_probability)
+        graphs.append(G)
+    return graphs
+
 if __name__ == '__main__':
-    sampled_N = N_distribution.rvs(size=1000)
+    graphs = generate_erdos_graphs(1)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2)
+
+    for G in graphs:
+        nx.draw(G, with_labels=True, ax=ax1)
+        ax1.set_title('Graph')
+
+        adj_matrix = nx.adjacency_matrix(G)
+
+        # Convert the adjacency matrix to a numpy array
+        adj_matrix_array = adj_matrix.toarray()
+
+        # Plot the adjacency matrix
+        ax2.imshow(adj_matrix_array, cmap='gray')
+        ax2.set_title('Adjacency Matrix')
+
+        plt.savefig('erdos_graph.png')
+
+        plt.show()
