@@ -1,6 +1,8 @@
 # %% Import
 from torch_geometric.datasets import TUDataset
 import networkx as nx
+import numpy as np
+import matplotlib.pyplot as plt
 
 # %% load dataset
 dataset = TUDataset(root='.', name='MUTAG', use_node_attr=True)
@@ -48,13 +50,51 @@ def novelty_and_uniqueness(generated_graphs):
 
     return precent_novel, pecent_unique, pecent_novel_and_unique
 
+def node_degree_histogram(graphs):
+    degrees = []
+    for G in graphs:
+        degrees.extend([d for n, d in G.degree()])
+    plt.hist(degrees, bins=20)
+    plt.xlabel('Node degree')
+    plt.ylabel('Number of nodes')
+    plt.title('Histogram of node degrees in the dataset')
+    plt.show()
+
+
+def clustering_coefficient_histogram(graphs):
+    clustering_coefficients = []
+    for G in graphs:
+        clustering_coefficients.append(nx.average_clustering(G))
+    plt.hist(clustering_coefficients, bins=20)
+    plt.xlabel('Average clustering coefficient')
+    plt.ylabel('Number of graphs')
+    plt.title('Histogram of average clustering coefficient in the dataset')
+    plt.show()
+
+def eigenvector_centrality_histogram(graphs):
+    eigenvector_centralities = []
+    for G in graphs:
+        eigenvector_centralities.extend(list(nx.eigenvector_centrality(G).values()))
+    plt.hist(eigenvector_centralities, bins=20)
+    plt.xlabel('Eigenvector centrality')
+    plt.ylabel('Number of nodes')
+    plt.title('Histogram of eigenvector centralities in the dataset')
+    plt.show()
+    
 if __name__ == "__main__":
     from ErdösRényi import generate_erdos_graphs
     generated_graphs = generate_erdos_graphs(1000)
 
-    precent_novel, pecent_unique, pecent_novel_and_unique = novelty_and_uniqueness(generated_graphs)
+    node_degree_histogram(training_graphs)
+    clustering_coefficient_histogram(training_graphs)
+    eigenvector_centrality_histogram(training_graphs)
 
-    print(f"Novel: {precent_novel}")
-    print(f"Unique: {pecent_unique}")
-    print(f"Novel and Unique: {pecent_novel_and_unique}")
 
+    #precent_novel, pecent_unique, pecent_novel_and_unique = novelty_and_uniqueness(generated_graphs)
+
+    #print(f"Novel: {precent_novel}")
+    #print(f"Unique: {pecent_unique}")
+    #print(f"Novel and Unique: {pecent_novel_and_unique}")
+
+
+# %%
