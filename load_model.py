@@ -1,4 +1,4 @@
-from gnn_graph_classification import SimpleGNN, GraphVAE, GaussianPrior
+from gnn_vae import SimpleGNN, GraphVAE, GaussianPrior
 import torch
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -8,7 +8,7 @@ state_dim = 32
 num_message_passing_rounds = 8
 node_feature_dim = 7
 
-latent_dim = 2
+latent_dim = 4
 
 
 # Encoder

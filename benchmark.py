@@ -57,7 +57,7 @@ def node_degree_histogram(ax, graphs):
     ax.hist(degrees, bins=range(min(degrees), max(degrees) + 2), density=True, width=.8)
     ax.set_xlabel('Node degree')
     ax.set_ylabel('Number of nodes')
-    ax.set_title('Histogram of node degrees in the dataset')
+    ax.set_title('Node degrees')
     
 
 
@@ -68,7 +68,7 @@ def clustering_coefficient_histogram(ax, graphs):
     ax.hist(clustering_coefficients, bins=20, density=True)
     ax.set_xlabel('Average clustering coefficient')
     ax.set_ylabel('Number of graphs')
-    ax.set_title('Histogram of average clustering coefficient in the dataset')
+    ax.set_title('Clustering coefficients')
     
 
 def eigenvector_centrality_histogram(ax, graphs):
@@ -83,7 +83,7 @@ def eigenvector_centrality_histogram(ax, graphs):
     ax.hist(eigenvector_centralities, bins=20, density=True)
     ax.set_xlabel('Eigenvector centrality')
     ax.set_ylabel('Number of nodes')
-    ax.set_title('Histogram of eigenvector centralities in the dataset')
+    ax.set_title('Eigenvector centralities')
     
 if __name__ == "__main__":
     from ErdösRényi import generate_erdos_graphs

@@ -80,43 +80,43 @@ class GraphVAE(torch.nn.Module):
         q = self.encoder(x)
         z = q.rsample()
 
-        
+        true_edges = x.edge_index.T
+
         # True edges in the graphs
-        true_log_probs = []
-        target = torch.tensor(1.0)
-        for edge in x.edge_index[:,]:
-            zu = z[edge[0]]
-            zv = z[edge[1]]
-            log_prob = self.decoder(zu, zv).log_prob(target)
-            true_log_probs.append(log_prob)
-            
-        false_log_probs = []
+        true_target = torch.tensor(1.0)
+        zu = z[true_edges[:, 0]]
+        zv = z[true_edges[:, 1]]
+
+        true_log_probs = self.decoder(zu, zv).log_prob(true_target)
+   
+        all_possible_edges = []
         for graph_idx in torch.unique(x["batch"]):
             graph_nodes = torch.where(x["batch"] == graph_idx)[0]
 
             all_graph_node_combinations = torch.combinations(graph_nodes, 2)
-            random_permutation = torch.randperm(all_graph_node_combinations.size(0))
-            all_graph_node_combinations = all_graph_node_combinations[random_permutation]# random suffle
+            all_possible_edges.append(all_graph_node_combinations)
+        
+        all_possible_edges = torch.cat(all_possible_edges, dim=0)
 
-            for combo in all_graph_node_combinations:
-                
-                # Skip if the edge exists
-                if torch.any(torch.all(torch.unsqueeze(combo, dim=1) == x["edge_index"], dim=0)):
-                    continue
-                
-                
-                if len(false_log_probs) == len(true_log_probs):
-                    break
-                
-                zu = z[combo[0]]
-                zv = z[combo[1]]
-                logp = self.decoder(zu, zv).log_prob(target)
-                log_prob = torch.log(1 - torch.exp(logp)) # Remember we look for the probability of the edge not existing
-                false_log_probs.append(log_prob)
 
+        all_possible_edges_set = set(map(tuple, all_possible_edges.tolist()))
+        true_edges_set = set(map(tuple, true_edges.tolist()))
+        
+        # Remove rows from A that are present in B
+        false_edges_set = all_possible_edges_set - true_edges_set
+        
+        # Convert the result set back to a tensor
+        false_edges = torch.tensor(list(false_edges_set))
+        
+        false_log_probs = []
+        false_target = torch.tensor(0.0)
+        zu = z[false_edges[:, 0]]
+        zv = z[false_edges[:, 1]]
+
+        false_log_probs = self.decoder(zu, zv).log_prob(false_target)
 
         # Gather loss
-        recon_loss = torch.mean(torch.stack(true_log_probs + false_log_probs))
+        recon_loss = torch.mean(torch.concat((true_log_probs, false_log_probs), dim=0))
         
        
         kl_div = td.kl_divergence(q, self.prior()).mean()
@@ -270,7 +270,8 @@ class SimpleGNN(torch.nn.Module):
         mean, logvar = torch.chunk(out, 2, dim=-1)
         
         return td.Independent(td.Normal(mean, torch.exp(logvar)), 1)
-    
+
+
 # %% Set up the model, loss, and optimizer etc.
 # Instantiate the model
 
@@ -298,7 +299,7 @@ if __name__ == '__main__':
     num_message_passing_rounds = 8
     node_feature_dim = 7
 
-    latent_dim = 2
+    latent_dim = 4
     
 
     # Encoder
