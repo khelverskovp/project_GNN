@@ -1,37 +1,54 @@
-# %%
 import torch
 from torch.utils.data import random_split
 from torch_geometric.datasets import TUDataset
 from torch_geometric.loader import DataLoader
 import matplotlib.pyplot as plt
+import numpy as np
+import torch.distributions as td
+from tqdm import tqdm
+import networkx as nx
+from ErdösRényi import N_distribution
 
-# %% Interactive plots
+# Interactive plots
 plt.ion() # Enable interactive plotting
 def drawnow():
     """Force draw the current plot."""
     plt.gcf().canvas.draw()
     plt.gcf().canvas.flush_events()
 
-# %% Device
-device = 'cpu'
 
-# %% Load the MUTAG dataset
-# Load data
-dataset = TUDataset(root='./data/', name='MUTAG').to(device)
-node_feature_dim = 7
 
-# Split into training and validation
-rng = torch.Generator().manual_seed(0)
-train_dataset, validation_dataset, test_dataset = random_split(dataset, (100, 44, 44), generator=rng)
 
-# Create dataloader for training and validation
-train_loader = DataLoader(train_dataset, batch_size=100)
-validation_loader = DataLoader(validation_dataset, batch_size=44)
-test_loader = DataLoader(test_dataset, batch_size=44)
+class GaussianPrior(torch.nn.Module):
+    def __init__(self, M):
+        super(GaussianPrior, self).__init__()
+        self.M = M
+        self.mean = torch.nn.Parameter(torch.zeros(M), requires_grad=False)
+        self.std = torch.nn.Parameter(torch.ones(M), requires_grad=False)
+        
+    def forward(self):
+        return td.Independent(td.Normal(loc = self.mean, scale = self.std), 1)
 
+class BernoulliDecoder(torch.nn.Module):
+    def __init__(self, decoder_net):
+        
+        super(BernoulliDecoder, self).__init__()
+        self.decoder_net = decoder_net
+        
+    def forward(self, zu, zv):
+       
+        # Concat the latent variables which are a single scaler tensor for each node
+        #zu = zu.unsqueeze(0)  # Adds an extra dimension, making zu a 1-dimensional tensor
+        #zv = zv.unsqueeze(0)  # Adds an extra dimension, making zv a 1-dimensional tensor
+
+        concat = zu * zv 
+        
+        logits = self.decoder_net(concat)
+        
+        return td.Independent(td.Bernoulli(logits=logits), 0)
 
 class GraphVAE(torch.nn.Module):
-    def __init__(self, node_feature_dim, state_dim, num_message_passing_rounds):
+    def __init__(self, node_feature_dim, state_dim, num_message_passing_rounds, encoder, decoder_net, prior):
         super().__init__()
 
         # Define dimensions and other hyperparameters
@@ -42,43 +59,124 @@ class GraphVAE(torch.nn.Module):
         
         # Encoder 
         # It will output a mean and a log-variance for each graph
-        self.encoder_net = SimpleGNN(self.node_feature_dim, 
-                                     self.state_dim, 
-                                     self.num_message_passing_rounds, 
-                                     output_dim=2)
-
-
+        self.encoder = encoder
+        
+        
+        self.decoder = BernoulliDecoder(decoder_net=decoder_net)
+        
+        # Initialize prior distribution of latent space
+        self.prior = prior
 
     # Function for sampling in the latent space
     def sample_latent(self, mu, logvar):
         """Sample from the latent space."""
         eps = torch.randn_like(logvar)
-        Z = mu + mu + eps*logvar
+        Z = mu +  eps*logvar
         return Z
     
-    # Define a decoder 
-    def decoder(self, zu, zv) :    
+    def elbo(self, x):
+ 
+        
+        q = self.encoder(x)
+        z = q.rsample()
 
-        link_probability = torch.sigmoid(zu.T @ zv + self.bias)
-        return link_probability
+        
+        # True edges in the graphs
+        true_log_probs = []
+        target = torch.tensor(1.0)
+        for edge in x.edge_index[:,]:
+            zu = z[edge[0]]
+            zv = z[edge[1]]
+            log_prob = self.decoder(zu, zv).log_prob(target)
+            true_log_probs.append(log_prob)
+            
+        false_log_probs = []
+        for graph_idx in torch.unique(x["batch"]):
+            graph_nodes = torch.where(x["batch"] == graph_idx)[0]
 
-    def forward(self, x, edge_index, batch):
+            all_graph_node_combinations = torch.combinations(graph_nodes, 2)
+            random_permutation = torch.randperm(all_graph_node_combinations.size(0))
+            all_graph_node_combinations = all_graph_node_combinations[random_permutation]# random suffle
 
-        # Encode
-        output = model.encoder_net(x,edge_index,batch)
-        mu = output[:,0]
-        logvar = output[:,1]
-        z = self.sample_latent(mu, logvar)
+            for combo in all_graph_node_combinations:
+                
+                # Skip if the edge exists
+                if torch.any(torch.all(torch.unsqueeze(combo, dim=1) == x["edge_index"], dim=0)):
+                    continue
+                
+                
+                if len(false_log_probs) == len(true_log_probs):
+                    break
+                
+                zu = z[combo[0]]
+                zv = z[combo[1]]
+                logp = self.decoder(zu, zv).log_prob(target)
+                log_prob = torch.log(1 - torch.exp(logp)) # Remember we look for the probability of the edge not existing
+                false_log_probs.append(log_prob)
 
-        # Decode
-        link_probabilities = self.decoder(z, z)
 
-        return link_probabilities
+        # Gather loss
+        recon_loss = torch.mean(torch.stack(true_log_probs + false_log_probs))
+        
+       
+        kl_div = td.kl_divergence(q, self.prior()).mean()
+        
+        return recon_loss - kl_div
+    
+    
+    def forward(self, x):
+        return -self.elbo(x)
+    
+    def sample(self, n = 1):
+        
+        sampled_graphs = []
+        N_list = N_distribution.rvs(size=n)
+        
+        for N in N_list:
+            sampled_nodes = self.prior().rsample((N,))
+
+            all_samples_node_combinations = torch.combinations(torch.arange(N), 2)
+
+            nodesu = sampled_nodes[all_samples_node_combinations[:, 0]]
+            nodesv = sampled_nodes[all_samples_node_combinations[:, 1]]
+
+            sampled_edges_bool_idx = torch.squeeze(self.decoder(nodesu, nodesv).sample()).bool().numpy()
+
+            sampled_edges = all_samples_node_combinations[sampled_edges_bool_idx]
+
+            A = torch.zeros((N, N)) # Adjacency matrix
+            A[sampled_edges[:, 0], sampled_edges[:, 1]] = 1
+            A[sampled_edges[:, 1], sampled_edges[:, 0]] = 1
+
+            G = nx.from_numpy_array(A.numpy())
+
+            sampled_graphs.append(G)
+
+        return sampled_graphs    
+    
+
+def train(model, optimizer, dataloader, epochs, device):
+    
+    
+    model.train()
+    
+    total_steps = len(dataloader)*epochs
+    progress_bar = tqdm(range(total_steps), desc='Training')
+
+    
+    for epoch in range(epochs):
+        data_iter = iter(dataloader)
+        
+        for x in data_iter:
+            optimizer.zero_grad()
+            loss = model(x)
+            loss.backward()
+            optimizer.step()
+            progress_bar.update(1)
+            progress_bar.set_postfix(loss=loss.item())
 
 
 
-
-# %% Define a simple GNN for graph classification
 class SimpleGNN(torch.nn.Module):
     """Simple graph neural network for graph classification
 
@@ -118,10 +216,15 @@ class SimpleGNN(torch.nn.Module):
                 torch.nn.ReLU()
             ) for _ in range(num_message_passing_rounds)])
 
-        # State output network
-        self.output_net = torch.nn.Linear(self.state_dim, self.output_dim)
 
-    def forward(self, x, edge_index, batch):
+        # State output network
+        self.output_net = torch.nn.Sequential(
+            torch.nn.Linear(self.state_dim, self.state_dim),
+            torch.nn.ReLU(),
+            torch.nn.Linear(self.state_dim, self.output_dim*2)
+        )
+
+    def forward(self, batch_data):
         """Evaluate neural network on a batch of graphs.
 
         Parameters
@@ -139,13 +242,16 @@ class SimpleGNN(torch.nn.Module):
             Neural network output for each graph.
 
         """
-        # Extract number of nodes and graphs
+
+        x = batch_data.x
+        edge_index = batch_data.edge_index
+        batch = batch_data.batch
+        
         num_graphs = batch.max()+1
         num_nodes = batch.shape[0]
 
         # Initialize node state from node features
         state = self.input_net(x)
-        # state = x.new_zeros([num_nodes, self.state_dim]) # Uncomment to disable the use of node features
 
         # Loop over message passing rounds
         for r in range(self.num_message_passing_rounds):
@@ -159,109 +265,78 @@ class SimpleGNN(torch.nn.Module):
             # Update states
             state = state + self.update_net[r](aggregated)
 
-        # Aggretate: Sum node features
-        graph_state = x.new_zeros((num_graphs, self.state_dim))
-        graph_state = torch.index_add(graph_state, 0, batch, state)
+        out = self.output_net(state)
 
-        # Output
-        #out = self.output_net(graph_state).flatten()
-        out = self.output_net(graph_state)
-        return out
+        mean, logvar = torch.chunk(out, 2, dim=-1)
+        
+        return td.Independent(td.Normal(mean, torch.exp(logvar)), 1)
     
 # %% Set up the model, loss, and optimizer etc.
 # Instantiate the model
-state_dim = 16
-num_message_passing_rounds = 4
-model = SimpleGNN(node_feature_dim, state_dim, num_message_passing_rounds).to(device)
 
-# Loss function
-cross_entropy = torch.nn.BCEWithLogitsLoss()
 
-# Optimizer
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
-
-# Learning rate scheduler
-scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.995)
-
-# %% Lists to store accuracy and loss
-train_accuracies = []
-train_losses = []
-validation_accuracies = []
-validation_losses = []
-
-# %% Fit the model
-# Number of epochs
-epochs = 500
-
-for epoch in range(epochs):
-    # Loop over training batches
-    model.train()
-    train_accuracy = 0.
-    train_loss = 0.
-    for data in train_loader:
-        out = model(data.x, data.edge_index, batch=data.batch)
-        loss = cross_entropy(out, data.y.float())
-
-        # Gradient step
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        # Compute training loss and accuracy
-        train_accuracy += sum((out>0) == data.y).detach().cpu() / len(train_loader.dataset)
-        train_loss += loss.detach().cpu().item() * data.batch_size / len(train_loader.dataset)
+if __name__ == '__main__':
     
-    # Learning rate scheduler step
-    scheduler.step()
+    device = 'cpu'
 
-    # Validation, print and plots
-    with torch.no_grad():    
-        model.eval()
-        # Compute validation loss and accuracy
-        validation_loss = 0.
-        validation_accuracy = 0.
-        for data in validation_loader:
-            out = model(data.x, data.edge_index, data.batch)
-            validation_accuracy += sum((out>0) == data.y).cpu() / len(validation_loader.dataset)
-            validation_loss += cross_entropy(out, data.y.float()).cpu().item() * data.batch_size / len(validation_loader.dataset)
+    # Load data
+    dataset = TUDataset(root='./data/', name='MUTAG').to(device)
+    node_feature_dim = 7
 
-        # Store the training and validation accuracy and loss for plotting
-        train_accuracies.append(train_accuracy)
-        train_losses.append(train_loss)
-        validation_losses.append(validation_loss)
-        validation_accuracies.append(validation_accuracy)
+    # Split into training and validation
+    rng = torch.Generator().manual_seed(0)
+    train_dataset, validation_dataset, test_dataset = random_split(dataset, (100, 44, 44), generator=rng)
 
-        # Print stats and update plots
-        if (epoch+1)%10 == 0:
-            print(f'Epoch {epoch+1}')
-            print(f'- Learning rate   = {scheduler.get_last_lr()[0]:.1e}')
-            print(f'- Train. accuracy = {train_accuracy:.3f}')
-            print(f'         loss     = {train_loss:.3f}')
-            print(f'- Valid. accuracy = {validation_accuracy:.3f}')
-            print(f'         loss     = {validation_loss:.3f}')
+    # Create dataloader for training and validation
+    train_loader = DataLoader(train_dataset, batch_size=100)
+    validation_loader = DataLoader(validation_dataset, batch_size=44)
+    test_loader = DataLoader(test_dataset, batch_size=44)
 
-            plt.figure('Loss').clf()
-            plt.plot(train_losses, label='Train')
-            plt.plot(validation_losses, label='Validation')
-            plt.legend()
-            plt.xlabel('Epoch')
-            plt.ylabel('Cross entropy')
-            plt.yscale('log')
-            plt.tight_layout()
-            drawnow()
+    
+        
+    state_dim = 32
+    num_message_passing_rounds = 8
+    node_feature_dim = 7
 
-            plt.figure('Accuracy').clf()
-            plt.plot(train_accuracies, label='Train')
-            plt.plot(validation_accuracies, label='Validation')
-            plt.legend()
-            plt.xlabel('Epoch')
-            plt.ylabel('Accuracy')
-            plt.tight_layout()
-            drawnow()
+    latent_dim = 2
+    
 
-# %% Save final predictions.
-with torch.no_grad():
-    data = next(iter(test_loader))
-    out = model(data.x, data.edge_index, data.batch).cpu()
-    torch.save(out, 'test_predictions.pt')
-# %%
+    # Encoder
+    encoder = SimpleGNN(node_feature_dim = node_feature_dim, 
+                        state_dim=state_dim, 
+                        num_message_passing_rounds = num_message_passing_rounds, 
+                        output_dim=latent_dim)
+
+    # Decoder Network
+    decoder_net = torch.nn.Sequential(torch.nn.Linear(latent_dim, latent_dim), 
+                                    torch.nn.ReLU(), 
+                                    torch.nn.Linear(latent_dim, 1),
+                                    torch.nn.Sigmoid())
+    
+    # Define the prior
+    prior = GaussianPrior(latent_dim)
+
+    # Define model
+    model = GraphVAE(node_feature_dim=node_feature_dim, 
+                     state_dim=state_dim, 
+                     num_message_passing_rounds=num_message_passing_rounds, 
+                     decoder_net=decoder_net, 
+                     prior = prior, 
+                     encoder = encoder).to(device)
+    
+    #state_dict = torch.load('model.pt')
+    #model.load_state_dict(state_dict)
+
+    # Optimizer
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+
+#%%
+    # Train the model
+    train(model, optimizer, train_loader, epochs=1000, device=device)
+
+    # %% Save final model.
+
+    torch.save(model.state_dict(), 'model.pt')
+    
+    
+    # %%
