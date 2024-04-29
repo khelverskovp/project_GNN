@@ -48,7 +48,7 @@ class BernoulliDecoder(torch.nn.Module):
         return td.Independent(td.Bernoulli(logits=logits), 0)
 
 class GraphVAE(torch.nn.Module):
-    def __init__(self, node_feature_dim, state_dim, num_message_passing_rounds, encoder, decoder_net, prior):
+    def __init__(self, node_feature_dim, state_dim, num_message_passing_rounds, encoder, decoder_net, prior, cache_edges=True):
         super().__init__()
 
         # Define dimensions and other hyperparameters
@@ -61,6 +61,7 @@ class GraphVAE(torch.nn.Module):
         # It will output a mean and a log-variance for each graph
         self.encoder = encoder
         
+        self.cache_edges = cache_edges
         
         self.decoder = BernoulliDecoder(decoder_net=decoder_net)
         
@@ -80,38 +81,42 @@ class GraphVAE(torch.nn.Module):
         q = self.encoder(x)
         z = q.rsample()
 
-        true_edges = x.edge_index.T
+        if not self.cache_edges or not hasattr(self, 'true_edges'):
+            true_edges = x.edge_index.T
+
+            all_possible_edges = []
+            for graph_idx in torch.unique(x["batch"]):
+                graph_nodes = torch.where(x["batch"] == graph_idx)[0]
+
+                all_graph_node_combinations = torch.combinations(graph_nodes, 2)
+                all_possible_edges.append(all_graph_node_combinations)
+            
+            all_possible_edges = torch.cat(all_possible_edges, dim=0)
+
+            all_possible_edges_set = set(map(tuple, all_possible_edges.tolist()))
+            true_edges_set = set(map(tuple, true_edges.tolist()))
+            
+            # Remove rows from A that are present in B
+            false_edges_set = all_possible_edges_set - true_edges_set
+            
+            # Convert the result set back to a tensor
+            false_edges = torch.tensor(list(false_edges_set))
+
+            if self.cache_edges:
+                self.true_edges = true_edges
+                self.false_edges = false_edges
 
         # True edges in the graphs
         true_target = torch.tensor(1.0)
-        zu_true = z[true_edges[:, 0]]
-        zv_true = z[true_edges[:, 1]]
+        zu_true = z[self.true_edges[:, 0]]
+        zv_true = z[self.true_edges[:, 1]]
 
         true_log_probs = self.decoder(zu_true, zv_true).log_prob(true_target)
-   
-        all_possible_edges = []
-        for graph_idx in torch.unique(x["batch"]):
-            graph_nodes = torch.where(x["batch"] == graph_idx)[0]
-
-            all_graph_node_combinations = torch.combinations(graph_nodes, 2)
-            all_possible_edges.append(all_graph_node_combinations)
-        
-        all_possible_edges = torch.cat(all_possible_edges, dim=0)
-
-
-        all_possible_edges_set = set(map(tuple, all_possible_edges.tolist()))
-        true_edges_set = set(map(tuple, true_edges.tolist()))
-        
-        # Remove rows from A that are present in B
-        false_edges_set = all_possible_edges_set - true_edges_set
-        
-        # Convert the result set back to a tensor
-        false_edges = torch.tensor(list(false_edges_set))
         
         false_log_probs = []
         false_target = torch.tensor(0.0)
-        zu_false = z[false_edges[:, 0]]
-        zv_false = z[false_edges[:, 1]]
+        zu_false = z[self.false_edges[:, 0]]
+        zv_false = z[self.false_edges[:, 1]]
 
         false_log_probs = self.decoder(zu_false, zv_false).log_prob(false_target)
 
@@ -329,7 +334,7 @@ if __name__ == '__main__':
     #model.load_state_dict(state_dict)
 
     # Optimizer
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 
 #%%
     # Train the model
