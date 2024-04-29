@@ -84,10 +84,10 @@ class GraphVAE(torch.nn.Module):
 
         # True edges in the graphs
         true_target = torch.tensor(1.0)
-        zu = z[true_edges[:, 0]]
-        zv = z[true_edges[:, 1]]
+        zu_true = z[true_edges[:, 0]]
+        zv_true = z[true_edges[:, 1]]
 
-        true_log_probs = self.decoder(zu, zv).log_prob(true_target)
+        true_log_probs = self.decoder(zu_true, zv_true).log_prob(true_target)
    
         all_possible_edges = []
         for graph_idx in torch.unique(x["batch"]):
@@ -110,17 +110,17 @@ class GraphVAE(torch.nn.Module):
         
         false_log_probs = []
         false_target = torch.tensor(0.0)
-        zu = z[false_edges[:, 0]]
-        zv = z[false_edges[:, 1]]
+        zu_false = z[false_edges[:, 0]]
+        zv_false = z[false_edges[:, 1]]
 
-        false_log_probs = self.decoder(zu, zv).log_prob(false_target)
+        false_log_probs = self.decoder(zu_false, zv_false).log_prob(false_target)
 
         # Gather loss
         recon_loss = torch.mean(torch.concat((true_log_probs, false_log_probs), dim=0))
         
        
         kl_div = td.kl_divergence(q, self.prior()).mean()
-        
+   
         return recon_loss - kl_div
     
     
@@ -299,7 +299,7 @@ if __name__ == '__main__':
     num_message_passing_rounds = 8
     node_feature_dim = 7
 
-    latent_dim = 4
+    latent_dim = 2
     
 
     # Encoder
