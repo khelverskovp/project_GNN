@@ -34,7 +34,11 @@ graph_density = graph_link_counts / graph_possible_links
 
 # %% What is needed to sample graphs:
 N_distribution = rv_discrete(values=(range(30), normalized_graph_node_count_histogram))
-link_probability = np.mean(graph_density)
+
+#link_probability = np.mean(graph_density)
+link_probability = []
+for i in range(10, 28 + 1):
+    link_probability.append(np.mean(graph_density[graph_node_count == i]))
 
 # %% Sample a graph
 def generate_erdos_graphs(n_graphs):
@@ -44,7 +48,7 @@ def generate_erdos_graphs(n_graphs):
     graphs = []
     N_samples = N_distribution.rvs(size=n_graphs)
     for N in N_samples:
-        G = nx.erdos_renyi_graph(N, link_probability)
+        G = nx.erdos_renyi_graph(N, link_probability[N-10])
         graphs.append(G)
     return graphs
 
